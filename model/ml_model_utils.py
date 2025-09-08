@@ -391,7 +391,9 @@ import os
 # 加载并清洗文本
 def read_time_machine():
     """Load the time machine dataset into a list of cleaned text lines."""
-    with open(r"F:\000-CS\LIMU_BILIBILI\timemachine.txt", 'r', encoding='utf-8') as f:
+    base_dir = os.path.dirname(__file__)  # /home/tse/文档/notes_limu/model
+    data_path = os.path.join(base_dir, '..', 'data', 'timemachine.txt')
+    with open(data_path, 'r', encoding='utf-8') as f:
         lines = f.readlines()
     # 把不是大小写字母的东西全部变成空格
     # re.sub(pattern, replacement, string)：表示用 replacement 替换 string 中所有匹配 pattern 的部分。
