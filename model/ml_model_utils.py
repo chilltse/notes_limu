@@ -7,6 +7,20 @@ def get_dataloader_workers():
     """使用4个进程来读取数据。"""
     return 4
 
+
+def evaluate_loss(net, data_iter, loss):
+    """评估给定数据集上模型的损失。"""
+    metric = Accumulator(2)  # [累计的 loss 总和, 样本总数]
+
+    for X, y in data_iter:
+        out = net(X)                          # 预测值
+        y = y.reshape(out.shape)              # 调整 y 的形状与 out 匹配
+        l = loss(out, y)                      # 计算损失张量（每个样本都有一个）
+
+        metric.add(l.sum(), l.numel())        # 累加总损失 和 样本数
+
+    return metric[0] / metric[1]              # 返回平均损失
+
 def load_data_fashion_mnist(batch_size, resize=None):
     """加载Fashion-MNIST数据集，分为训练集和测试集。"""
     trans = [transforms.ToTensor()]
@@ -27,6 +41,47 @@ def load_data_fashion_mnist(batch_size, resize=None):
             data.DataLoader(mnist_test, batch_size, num_workers=get_dataloader_workers()))
 
 
+import matplotlib.pyplot as plt
+import numpy as np
+import torch
+
+
+def d2l_plot(X, Y, xlabel=None, ylabel=None, legend=None, xlim=None,
+             ylim=None, xscale='linear', yscale='linear', fmts=('-', 'm--', 'g-.', 'r:'),
+             figsize=(3.5, 2.5)):
+    """模仿 d2l.plot 的 matplotlib 实现"""
+
+    plt.figure(figsize=figsize)
+
+    if not isinstance(X, (list, tuple)):
+        X = [X]
+    if not isinstance(Y, (list, tuple)):
+        Y = [Y]
+
+    # 多条曲线时，X 和 Y 的长度要对应
+    if len(X) != len(Y):
+        raise ValueError(f"len(X)={len(X)} 与 len(Y)={len(Y)} 不一致")
+
+    for x, y, fmt in zip(X, Y, fmts):
+        # 转 numpy
+        if isinstance(x, torch.Tensor):
+            x = x.detach().cpu().numpy()
+        if isinstance(y, torch.Tensor):
+            y = y.detach().cpu().numpy()
+        plt.plot(x, y, fmt)
+
+    plt.xlabel(xlabel)
+    plt.ylabel(ylabel)
+    plt.xscale(xscale)
+    plt.yscale(yscale)
+    if legend:
+        plt.legend(legend)
+    if xlim:
+        plt.xlim(xlim)
+    if ylim:
+        plt.ylim(ylim)
+    plt.grid(True)
+    plt.show()
 
 
 class Accumulator:
@@ -39,12 +94,13 @@ class Accumulator:
     def add(self, *args):
         # zip(self.data, args)：
         # 把两个列表打包成一一对应的对：
-        # [0.0, 0.0], (3, 7) → [(0.0, 3), (0.0, 7)]
+        # [0.0, 0.0], (3, 7) -zip→ [(0.0, 3), (0.0, 7)] -a + float(b)→ [(3.0), (7.0)]
         self.data = [a + float(b) for a, b in zip(self.data, args)]
 
     def reset(self):
         self.data = [0.0] * len(self.data)
 
+    # 用法是直接从实例加括号取得，例如 metric[0]
     def __getitem__(self, idx):
         return self.data[idx]
 
@@ -320,8 +376,12 @@ def set_figsize(figsize=(3.5, 2.5)):
 def tokenize(lines, token='word'):
     """将文本行拆分为单词或字符标记。"""
     if token == 'word':
+        # 例如  lines = ["I love NLP", "Deep Learning"]
+        # # [['I', 'love', 'NLP'], ['Deep', 'Learning']]
         return [line.split() for line in lines]
     elif token == 'char':
+        # 例如lines = ["I love", "AI"]
+        # # [['I', ' ', 'l', 'o', 'v', 'e'], ['A', 'I']]
         return [list(line) for line in lines]
     else:
         print('错误：未知令牌类型：' + token)
@@ -329,10 +389,16 @@ def tokenize(lines, token='word'):
 
 import collections
 
+def load_array(data_arrays, batch_size, is_train=True):
+    """Construct a PyTorch data iterator."""
+    # 把 (features, labels) 封装成一个 PyTorch 的数据集对象，支持索引。
+    dataset = data.TensorDataset(*data_arrays)
+    return data.DataLoader(dataset, batch_size, shuffle=is_train)
+
 def count_corpus(tokens):
     """统计标记的频率"""
+    # 将按照Line分开的tokens变成所有Line都混在一起的tokens
     if len(tokens) == 0 or isinstance(tokens[0], list):
-        # 将二维嵌套列表展平
         tokens = [token for line in tokens for token in line]
     return collections.Counter(tokens)
 
@@ -355,26 +421,46 @@ class Vocab:
         #     <pad>	填充序列对齐长度
         #     <bos>	序列起始（begin of sentence）
         #     <eos>	序列结束（end of sentence）
+        # self.unk = 0; 表示<unk>的id是0; uniq_tokens储存所有的tokens；初始化的时候先储存包括<unk>在内的所有reserved_tokens；
         self.unk, uniq_tokens = 0, ['<unk>'] + reserved_tokens
+        # 如果大于最低词频，加入到uniq_tokens。
         uniq_tokens += [
             token for token, freq in self.token_freqs
             if freq >= min_freq and token not in uniq_tokens
         ]
 
+
         self.idx_to_token, self.token_to_idx = [], {}
         for token in uniq_tokens:
+            # 这里的self.idx_to_token实际上就是uniq_tokens；
+            # 例子：['<unk>', '<pad>', 'the', 'cat', 'dog']
             self.idx_to_token.append(token)
+            # 分配下一个可用下标给当前的token;
+            # 例子：
+            #     token_to_idx = {
+            #         '<unk>': 0,
+            #         '<pad>': 1,
+            #         'the': 2,
+            #         'cat': 3,
+            #         'dog': 4
+            #     }
             self.token_to_idx[token] = len(self.idx_to_token) - 1
 
 
     def __len__(self):
+        # 表示uniq_tokens的个数
         return len(self.idx_to_token)
 
+    # 找到tokens对应的索引
     def __getitem__(self, tokens):
+        # (list, tuple)表示“或”关系，列表或元组。
+        # 这里表示如果是单个token就直接查字典，如果是列表或元组就循环查并返回一个List
         if not isinstance(tokens, (list, tuple)):
+            # .get(tokens, self.unk)：如果词在字典里，就返回索引；如果不在，就返回 self.unk
             return self.token_to_idx.get(tokens, self.unk)
         return [self.__getitem__(token) for token in tokens]
 
+    # 把索引转成tokens
     def to_tokens(self, indices):
         if not isinstance(indices, (list, tuple)):
             return self.idx_to_token[indices]
@@ -396,7 +482,11 @@ def read_time_machine():
     with open(data_path, 'r', encoding='utf-8') as f:
         lines = f.readlines()
     # 把不是大小写字母的东西全部变成空格
-    # re.sub(pattern, replacement, string)：表示用 replacement 替换 string 中所有匹配 pattern 的部分。
+    # re.sub(pattern, replacement, target_string)：表示用 replacement 替换 string 中所有匹配 pattern 的部分。
+    # 正则表达式[^A-Za-z]+
+    #    ^：取反。
+    #    A-Za-z：表示所有英文大小写字母。
+    #    +：匹配一次或多次。
     # .strip()去除处理后字符串的首尾空格。
     return [re.sub('[^A-Za-z]+', ' ', line).strip().lower() for line in lines]
 
@@ -404,10 +494,13 @@ def read_time_machine():
 def load_corpus_time_machine(max_tokens=-1):
     """返回时光机器数据集的标记索引列表和词汇表。"""
     lines = read_time_machine()
-    tokens = tokenize(lines, 'char')
-    # tokens = tokenize(lines, 'word')
+    # tokens = tokenize(lines, 'char')
+    tokens = tokenize(lines, 'word')
     vocab = Vocab(tokens)
+    # 取到这篇文章里的所有的 id 对应的 顺序列表； corpus中文翻译是“语料库”
     corpus = [vocab[token] for line in tokens for token in line]  # 展平为 index 序列
+
+    # 可能会只截取文章的开头一部分
     if max_tokens > 0:
         corpus = corpus[:max_tokens]
     return corpus, vocab
@@ -428,9 +521,11 @@ vocab.token_freqs[:10]
 # 随机采样：一个batch中，子序列之间是无序的
 def seq_data_iter_random(corpus, batch_size, num_steps):  #@save
     """使用随机抽样生成一个小批量子序列"""
-    # 从随机偏移量开始对序列进行分区，随机范围包括num_steps-1
+    # 选取起始位置k, 范围是[0, num_steps-1]， 这num_steps种划分方式代表了所有可能生成的 “特征-标签 对”
+    #      从区间 [0, num_steps-1] 中随机生成一个整数k，这个取值范围包括(num_steps-1); 从下标 k 开始一直取到结尾。
     corpus = corpus[random.randint(0, num_steps - 1):]
-    # 减去1，是因为我们需要考虑标签，即在最后一个组别的时候，我们也可以通过+1去找到它对应的y
+    # 减去1，是因为我们需要考虑标签，即在最后一个组别的时候，我们也可以通过+1去找到它对应的y： 这里默认是单步预测
+    # num_subseqs表示所有num_subseqs的数量;
     num_subseqs = (len(corpus) - 1) // num_steps
     # 长度为num_steps的子序列的起始索引
     # 表示从 start 开始，到 stop 之前（不包括stop），每次增加 step 的一个序列。
